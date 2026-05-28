@@ -157,11 +157,9 @@ if not st.session_state.historial or st.session_state.historial[-1] != paquete:
     with st.expander("JSON completo recibido"):
         st.json(data)
         
-        st.subheader("📦 Historial de paquetes")
 
 historial_df = pd.DataFrame(st.session_state.historial)
 
-st.dataframe(historial_df, use_container_width=True)
 
 csv = historial_df.to_csv(index=False).encode("utf-8")
 
