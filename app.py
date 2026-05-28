@@ -9,7 +9,7 @@ import pandas as pd
 
 APP_ID = "lilygo-pma"
 USERNAME = APP_ID + "@ttn"
-PASSWORD = st.secrets["TTN_API_KEY"]x
+PASSWORD = st.secrets["TTN_API_KEY"]
 
 HOST = "eu1.cloud.thethings.network"
 PORT = 8883
