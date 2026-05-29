@@ -17,7 +17,7 @@ HOST = "eu1.cloud.thethings.network"
 PORT = 8883
 TOPIC = f"v3/{USERNAME}/devices/+/up"
 
-# --- DECODIFICADOR DE PAYLOAD ---
+# --- DECODIFICADOR SEGURO DEL PAYLOAD ---
 def decode_payload(payload_b64):
     try:
         if not payload_b64 or payload_b64 == "N/A":
@@ -28,8 +28,10 @@ def decode_payload(payload_b64):
         if len(payload_bytes) < 10:
             return None, None, 0
             
+        # Desempaquetado Big Endian de los 10 bytes (>i = entero 4 bytes, >H = entero unsigned 2 bytes)
         lat_raw, lon_raw, sat = struct.unpack(">iiH", payload_bytes[:10])
         
+        # Operación inversa para recuperar los decimales
         latitud = lat_raw / 1000000.0
         longitud = lon_raw / 1000000.0
         
@@ -72,7 +74,7 @@ st.title("📡 Dashboard LilyGO LoRaWAN")
 if "historial" not in st.session_state:
     st.session_state.historial = []
 
-# Inicialización por defecto de variables
+# Inicialización obligatoria y limpia de las variables dinámicas
 lilygo_lat = None
 lilygo_lon = None
 gps_satellites = 0
@@ -86,6 +88,7 @@ if data:
     toa = uplink.get("consumed_airtime", "N/A")
     frm_payload = uplink.get("frm_payload", "N/A")
     
+    # Intentar extraer los datos reales del GPS
     lilygo_lat, lilygo_lon, gps_satellites = decode_payload(frm_payload)
     
     paquete = {
@@ -168,7 +171,7 @@ if data:
         st.subheader("🗺️ Localización de gateways")
         st.map(map_df.rename(columns={"Latitud": "lat", "Longitud": "lon"})[["lat", "lon"]])
 
-    # --- MAPA DINÁMICO CORREGIDO SIN ERRORES DE SINTAXIS ---
+    # --- SECCIÓN DEL MAPA DE LA LILYGO COMPLETAMENTE CORREGIDA ---
     st.subheader("📍 Localización de la LilyGO (GPS Dinámico)")
 
     if lilygo_lat is not None and lilygo_lon is not None:
@@ -179,8 +182,9 @@ if data:
         lilygo_df = pd.DataFrame({"lat": [lilygo_lat], "lon": [lilygo_lon]})
         st.map(lilygo_df)
     else:
-        st.warning("⚠️ La LilyGO está transmitiendo, pero el GPS todavía no tiene FIX (0 satélites). Mostrando posición de respaldo...")
+        st.warning("⚠️ La LilyGO está transmitiendo, pero el GPS todavía no tiene FIX (Buscando cobertura...). Mostrando posición de respaldo predeterminada.")
         st.write("**Latitud LilyGO:** Sin Fix")
         st.write("**Longitud LilyGO:** Sin Fix")
         
-        respaldo_df = pd.DataFrame({"lat": [39.4825], "lon":
+        # Diccionario cerrado de manera correcta para evitar SyntaxError
+        respaldo_df = pd.DataFrame({"
