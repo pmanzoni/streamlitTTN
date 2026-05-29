@@ -28,10 +28,8 @@ def decode_payload(payload_b64):
         if len(payload_bytes) < 10:
             return None, None, 0
             
-        # Desempaquetado Big Endian de los 10 bytes (>i = entero 4 bytes, >H = entero unsigned 2 bytes)
         lat_raw, lon_raw, sat = struct.unpack(">iiH", payload_bytes[:10])
         
-        # Operación inversa para recuperar los decimales
         latitud = lat_raw / 1000000.0
         longitud = lon_raw / 1000000.0
         
@@ -74,7 +72,7 @@ st.title("📡 Dashboard LilyGO LoRaWAN")
 if "historial" not in st.session_state:
     st.session_state.historial = []
 
-# Inicialización obligatoria y limpia de las variables dinámicas
+# Inicialización limpia de variables de posicionamiento global
 lilygo_lat = None
 lilygo_lon = None
 gps_satellites = 0
@@ -88,7 +86,7 @@ if data:
     toa = uplink.get("consumed_airtime", "N/A")
     frm_payload = uplink.get("frm_payload", "N/A")
     
-    # Intentar extraer los datos reales del GPS
+    # Decodificar coordenadas reales enviadas por la LilyGO
     lilygo_lat, lilygo_lon, gps_satellites = decode_payload(frm_payload)
     
     paquete = {
@@ -171,7 +169,7 @@ if data:
         st.subheader("🗺️ Localización de gateways")
         st.map(map_df.rename(columns={"Latitud": "lat", "Longitud": "lon"})[["lat", "lon"]])
 
-    # --- SECCIÓN DEL MAPA DE LA LILYGO COMPLETAMENTE CORREGIDA ---
+    # --- SECCIÓN SEGURA: COMPROBACIÓN Y MAPA DE LILYGO ---
     st.subheader("📍 Localización de la LilyGO (GPS Dinámico)")
 
     if lilygo_lat is not None and lilygo_lon is not None:
@@ -182,9 +180,43 @@ if data:
         lilygo_df = pd.DataFrame({"lat": [lilygo_lat], "lon": [lilygo_lon]})
         st.map(lilygo_df)
     else:
-        st.warning("⚠️ La LilyGO está transmitiendo, pero el GPS todavía no tiene FIX (Buscando cobertura...). Mostrando posición de respaldo predeterminada.")
+        st.warning("⚠️ La LilyGO está transmitiendo, pero el GPS todavía no tiene FIX (Buscando satélites). Mostrando posición de respaldo...")
         st.write("**Latitud LilyGO:** Sin Fix")
         st.write("**Longitud LilyGO:** Sin Fix")
         
-        # Diccionario cerrado de manera correcta para evitar SyntaxError
-        respaldo_df = pd.DataFrame({"
+        # Corregido: Inicialización limpia del DataFrame sin paréntesis colgados
+        respaldo_df = pd.DataFrame({"lat": [39.4825], "lon": [-0.3463]})
+        st.map(respaldo_df)
+
+    with st.expander("JSON completo recibido"):
+        st.json(data)
+
+# --- TRATAMIENTO DEL HISTORIAL DE DATOS ---
+historial_df = pd.DataFrame(st.session_state["historial"])
+
+if not historial_df.empty:
+    csv = historial_df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Descargar CSV", csv, "historial_lilygo.csv", "text/csv")
+
+    def crear_pdf(df):
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "Informe LilyGO LoRaWAN", ln=True)
+        pdf.set_font("Arial", "", 10)
+
+        for idx, row in df.iterrows():
+            pdf.ln(5)
+            pdf.cell(0, 8, f"Paquete {idx+1}", ln=True)
+            for col, value in row.items():
+                pdf.multi_cell(0, 6, f"{col}: {value}")
+        return pdf.output(dest="S").encode("latin-1")
+
+    pdf_bytes = crear_pdf(historial_df)
+    st.download_button("📄 Descargar PDF", pdf_bytes, "informe_lilygo.pdf", "application/pdf")
+
+if not data:
+    st.info("Esperando datos MQTT de TTN...")
+
+time.sleep(3)
+st.rerun()
