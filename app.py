@@ -6,6 +6,8 @@ import paho.mqtt.client as mqtt
 import json
 import time
 import pandas as pd
+import base64
+import struct
 
 APP_ID = "lilygo-pma"
 USERNAME = APP_ID + "@ttn"
@@ -15,10 +17,7 @@ HOST = "eu1.cloud.thethings.network"
 PORT = 8883
 TOPIC = f"v3/{USERNAME}/devices/+/up"
 
-# Ubicación manual de la LilyGO
-#LILYGO_LAT = 39.4825
-#LILYGO_LON = -0.3463
-
+# --- FUNCIÓN PARA DECORIFICAR EL PAYLOAD DEL GPS ---
 def decode_payload(payload_b64):
     try:
         if not payload_b64 or payload_b64 == "N/A":
@@ -31,10 +30,7 @@ def decode_payload(payload_b64):
         if len(payload_bytes) < 10:
             return None, None, 0
             
-        # Desempaquetar bytes (¡El formato binario debe coincidir con el bit-shifting de Arduino!)
-        # >i: entero de 4 bytes con signo (Big Endian) para Latitud
-        # >i: entero de 4 bytes con signo (Big Endian) para Longitud
-        # >H: entero de 2 bytes sin signo (Big Endian) para Satélites
+        # Desempaquetar bytes (Formato binario Big Endian)
         lat_raw, lon_raw, sat = struct.unpack(">iiH", payload_bytes[:10])
         
         # Recuperar los decimales originales dividiendo por 1,000,000
@@ -81,6 +77,11 @@ st.title("📡 Dashboard LilyGO LoRaWAN")
 if "historial" not in st.session_state:
     st.session_state.historial = []
 
+# --- SOLUCIÓN 1: INICIALIZACIÓN GLOBAL DE LAS VARIABLES ---
+lilygo_lat = None
+lilygo_lon = None
+gps_satellites = 0
+
 if data:
     uplink = data.get("uplink_message", {})
     gateways = uplink.get("rx_metadata", [])
@@ -88,27 +89,28 @@ if data:
 
     frecuencia = settings.get("frequency", "N/A")
     toa = uplink.get("consumed_airtime", "N/A")
+    frm_payload = uplink.get("frm_payload", "N/A")
+    
+    # Extraer y decodificar coordenadas dinámicas desde el payload binario
+    lilygo_lat, lilygo_lon, gps_satellites = decode_payload(frm_payload)
     
     paquete = {
-    "fecha_registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    "device": data.get("end_device_ids", {}).get("device_id", "N/A"),
-    "frame_counter": uplink.get("f_cnt", "N/A"),
-    "payload": uplink.get("frm_payload", "N/A"),
-    "gateways": len(gateways),
-    "frecuencia": frecuencia,
-    "toa": toa
-}
+        "fecha_registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "device": data.get("end_device_ids", {}).get("device_id", "N/A"),
+        "frame_counter": uplink.get("f_cnt", "N/A"),
+        "payload": frm_payload,
+        "gps_latitud": lilygo_lat if lilygo_lat is not None else "Sin Fix",
+        "gps_longitud": lilygo_lon if lilygo_lon is not None else "Sin Fix",
+        "satelites": gps_satellites,
+        "gateways": len(gateways),
+        "frecuencia": frecuencia,
+        "toa": toa
+    }
 
     for i, gw in enumerate(gateways, start=1):
         paquete[f"gateway_{i}"] = gw.get("gateway_ids", {}).get("gateway_id", "N/A")
         paquete[f"rssi_{i}"] = gw.get("rssi", "N/A")
         paquete[f"snr_{i}"] = gw.get("snr", "N/A")
-
-    if "historial" not in st.session_state:
-        st.session_state["historial"] = []
-
-    if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
-        st.session_state["historial"].append(paquete)
 
     if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
         st.session_state["historial"].append(paquete)
@@ -118,7 +120,7 @@ if data:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Dispositivo", data["end_device_ids"]["device_id"])
     c2.metric("Frame counter", uplink.get("f_cnt"))
-    c3.metric("Payload", uplink.get("frm_payload"))
+    c3.metric("Payload", frm_payload)
     c4.metric("Gateways recibidos", len(gateways))
 
     st.subheader("📡 Gateways que han recibido la LilyGO")
@@ -179,7 +181,7 @@ if data:
             })[["lat", "lon"]]
         )
 
-    # --- SECCIÓN CORREGIDA DE LOCALIZACIÓN DE LA LILYGO ---
+    # --- SOLUCIÓN 2: CONTROL DE MAPA SEGURO DENTRO DE 'IF DATA' ---
     st.subheader("📍 Localización de la LilyGO (GPS Dinámico)")
 
     if lilygo_lat is not None and lilygo_lon is not None:
@@ -193,59 +195,8 @@ if data:
         })
         st.map(lilygo_df)
     else:
-        st.warning("⚠️ La LilyGO está transmitting, pero el GPS todavía no tiene FIX (Buscando satélites...).")
+        st.warning("⚠️ La LilyGO está transmitiendo, pero el GPS todavía no tiene FIX (0 satélites). Mostrando posición de respaldo...")
         st.write("**Latitud LilyGO:** Sin Fix")
         st.write("**Longitud LilyGO:** Sin Fix")
         
-        # Ubicación estática de respaldo (Valencia) para que el mapa no se rompa
-        respaldo_df = pd.DataFrame({"lat": [39.4825], "lon": [-0.3463]})
-        st.map(respaldo_df)
-
-    with st.expander("JSON completo recibido"):
-        st.json(data)
-        
-
-historial_df = pd.DataFrame(st.session_state["historial"])
-
-
-csv = historial_df.to_csv(index=False).encode("utf-8")
-
-st.download_button(
-    "⬇️ Descargar CSV",
-    csv,
-    "historial_lilygo.csv",
-    "text/csv"
-)
-
-def crear_pdf(df):
-    pdf = FPDF()
-    pdf.add_page()
-
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Informe LilyGO LoRaWAN", ln=True)
-
-    pdf.set_font("Arial", "", 10)
-
-    for idx, row in df.iterrows():
-        pdf.ln(5)
-        pdf.cell(0, 8, f"Paquete {idx+1}", ln=True)
-
-        for col, value in row.items():
-            pdf.multi_cell(0, 6, f"{col}: {value}")
-
-    return pdf.output(dest="S").encode("latin-1")
-
-pdf_bytes = crear_pdf(historial_df)
-
-st.download_button(
-    "📄 Descargar PDF",
-    pdf_bytes,
-    "informe_lilygo.pdf",
-    "application/pdf"
-)
-
-if not data:
-    st.info("Esperando datos MQTT...")
-
-time.sleep(3)
-st.rerun()
+        respaldo_df = pd.DataFrame({"lat": [39.4825], "lon":
