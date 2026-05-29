@@ -73,11 +73,13 @@ if data:
         paquete[f"rssi_{i}"] = gw.get("rssi", "N/A")
         paquete[f"snr_{i}"] = gw.get("snr", "N/A")
 
-if not st.session_state.historial or st.session_state.historial[-1] != paquete:
     if "historial" not in st.session_state:
     st.session_state["historial"] = []
 
-if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
+    if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
+    st.session_state["historial"].append(paquete)
+
+    if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
     st.session_state["historial"].append(paquete)
 
     st.success("Datos recibidos desde TTN")
