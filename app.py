@@ -74,7 +74,11 @@ if data:
         paquete[f"snr_{i}"] = gw.get("snr", "N/A")
 
 if not st.session_state.historial or st.session_state.historial[-1] != paquete:
-    st.session_state.historial.append(paquete)
+    if "historial" not in st.session_state:
+    st.session_state["historial"] = []
+
+if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
+    st.session_state["historial"].append(paquete)
 
     st.success("Datos recibidos desde TTN")
 
@@ -158,7 +162,7 @@ if not st.session_state.historial or st.session_state.historial[-1] != paquete:
         st.json(data)
         
 
-historial_df = pd.DataFrame(st.session_state.historial)
+historial_df = pd.DataFrame(st.session_state["historial"])
 
 
 csv = historial_df.to_csv(index=False).encode("utf-8")
