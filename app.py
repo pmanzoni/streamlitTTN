@@ -16,8 +16,39 @@ PORT = 8883
 TOPIC = f"v3/{USERNAME}/devices/+/up"
 
 # Ubicación manual de la LilyGO
-LILYGO_LAT = 39.4825
-LILYGO_LON = -0.3463
+#LILYGO_LAT = 39.4825
+#LILYGO_LON = -0.3463
+
+def decode_payload(payload_b64):
+    try:
+        if not payload_b64 or payload_b64 == "N/A":
+            return None, None, 0
+            
+        # Convertir de Base64 a bytes
+        payload_bytes = base64.b64decode(payload_b64)
+        
+        # Verificar que tenga los 10 bytes esperados (4 lat + 4 lon + 2 sat)
+        if len(payload_bytes) < 10:
+            return None, None, 0
+            
+        # Desempaquetar bytes (¡El formato binario debe coincidir con el bit-shifting de Arduino!)
+        # >i: entero de 4 bytes con signo (Big Endian) para Latitud
+        # >i: entero de 4 bytes con signo (Big Endian) para Longitud
+        # >H: entero de 2 bytes sin signo (Big Endian) para Satélites
+        lat_raw, lon_raw, sat = struct.unpack(">iiH", payload_bytes[:10])
+        
+        # Recuperar los decimales originales dividiendo por 1,000,000
+        latitud = lat_raw / 1000000.0
+        longitud = lon_raw / 1000000.0
+        
+        # Validación básica de coordenadas lógicas terrestres
+        if latitud == 0.0 and longitud == 0.0:
+            return None, None, 0
+            
+        return latitud, longitud, sat
+    except Exception as e:
+        print("Error decodificando payload:", e)
+        return None, None, 0
 
 st.set_page_config(page_title="LilyGO LoRaWAN", page_icon="📡", layout="wide")
 
