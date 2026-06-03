@@ -10,9 +10,9 @@ import pandas as pd
 import base64
 import struct
 
-APP_ID = "lilygo-pma"
+APP_ID = "lopys2ttn" # "lilygo-pma"
 USERNAME = APP_ID + "@ttn"
-PASSWORD = st.secrets["TTN_API_KEY"]
+PASSWORD = "NNSXS.A55Z2P4YCHH2RQ7ONQVXFCX2IPMPJQLXAPKQSWQ.A5AB4GALMW623GZMJEWNIVRQSMRMZF4CHDBTTEQYRAOFKBH35G2A" # st.secrets["TTN_API_KEY"]
 
 HOST = "eu1.cloud.thethings.network"
 PORT = 8883
