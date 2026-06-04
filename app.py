@@ -19,7 +19,7 @@ from fpdf import FPDF
 # ============================================================
 
 st.set_page_config(
-    page_title="LilyGO LoRaWAN",
+    page_title="LoRaWAN Gateway Status @ UPV",
     page_icon="📡",
     layout="wide",
 )
@@ -177,7 +177,7 @@ def generate_pdf_report(df: pd.DataFrame) -> bytes:
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
 
-    pdf.cell(0, 10, "LilyGO LoRaWAN Report", ln=True)
+    pdf.cell(0, 10, "LoRaWAN Gateway Status Report", ln=True)
 
     pdf.set_font("Arial", "", 10)
 
