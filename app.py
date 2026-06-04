@@ -548,6 +548,5 @@ if page == "🗼 Gateway Status":
 # AUTO REFRESH
 # ============================================================
 
-from streamlit_autorefresh import st_autorefresh
-
-st_autorefresh(interval=3000, key="mqtt_refresh")
+time.sleep(3)
+st.rerun()
