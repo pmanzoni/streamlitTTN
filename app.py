@@ -363,8 +363,8 @@ if data:
 page = st.sidebar.radio(
     "Navigation",
     [
-        "📡 Dashboard",
         "🗼 Gateway Status",
+        "📡 Dashboard",
     ],
 )
 
