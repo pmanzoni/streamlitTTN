@@ -1,49 +1,91 @@
-# version PM - con página de estado de gateways + debug MQTT
-from fpdf import FPDF
+# ============================================================
+# IMPORTS
+# ============================================================
+
 from datetime import datetime
-
-import streamlit as st
-import paho.mqtt.client as mqtt
-import json
-import time
-import pandas as pd
 import base64
+import json
 import struct
+import time
 
-APP_ID    = st.secrets["TTN_APP_ID"]
-USERNAME  = APP_ID + "@ttn"
-PASSWORD  = st.secrets["TTN_API_KEY"]
-HOST      = "eu1.cloud.thethings.network"
-PORT      = 8883
-TOPIC     = f"v3/{USERNAME}/devices/+/up"
+import pandas as pd
+import paho.mqtt.client as mqtt
+import streamlit as st
+from fpdf import FPDF
 
-GATEWAY_TIMEOUT_S = 300  # 5 min
 
-# --- DECODIFICADOR SEGURO DEL PAYLOAD ---
-def decode_payload(payload_b64):
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+st.set_page_config(
+    page_title="LilyGO LoRaWAN",
+    page_icon="📡",
+    layout="wide",
+)
+
+APP_ID = st.secrets["TTN_APP_ID"]
+USERNAME = f"{APP_ID}@ttn"
+PASSWORD = st.secrets["TTN_API_KEY"]
+
+HOST = "eu1.cloud.thethings.network"
+PORT = 8883
+TOPIC = f"v3/{USERNAME}/devices/+/up"
+
+GATEWAY_TIMEOUT_S = 300
+
+
+# ============================================================
+# PAYLOAD DECODER
+# ============================================================
+
+def decode_payload(payload_b64: str):
+    """
+    Decode GPS payload received from TTN.
+
+    Returns:
+        tuple(latitude, longitude, satellites)
+    """
     try:
         if not payload_b64 or payload_b64 == "N/A":
             return None, None, 0
+
         payload_bytes = base64.b64decode(payload_b64)
+
         if len(payload_bytes) < 10:
             return None, None, 0
-        lat_raw, lon_raw, sat = struct.unpack(">iiH", payload_bytes[:10])
-        latitud  = lat_raw / 1000000.0
-        longitud = lon_raw / 1000000.0
-        if latitud == 0.0 and longitud == 0.0:
+
+        lat_raw, lon_raw, satellites = struct.unpack(">iiH", payload_bytes[:10])
+
+        latitude = lat_raw / 1_000_000
+        longitude = lon_raw / 1_000_000
+
+        if latitude == 0.0 and longitude == 0.0:
             return None, None, 0
-        return latitud, longitud, sat
-    except Exception as e:
-        print("Error decodificando payload:", e)
+
+        return latitude, longitude, satellites
+
+    except Exception as error:
+        print("Payload decode error:", error)
         return None, None, 0
 
-st.set_page_config(page_title="LilyGO LoRaWAN", page_icon="📡", layout="wide")
 
-# ---------------------------------------------------------------------------
-# MQTT  — credentials passed as arguments so the cache key changes if they do
-# ---------------------------------------------------------------------------
+# ============================================================
+# MQTT CONNECTION
+# ============================================================
+
 @st.cache_resource
-def start_mqtt(host, port, username, password, topic):
+def start_mqtt(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    topic: str,
+):
+    """
+    Initialize MQTT client connection.
+    """
+
     store = {
         "data": None,
         "connected": False,
@@ -55,363 +97,457 @@ def start_mqtt(host, port, username, password, topic):
 
     def on_connect(client, userdata, flags, rc):
         store["rc"] = rc
+
         if rc == 0:
             store["connected"] = True
             client.subscribe(topic)
         else:
             store["connected"] = False
-            store["error"] = f"Conexión rechazada, rc={rc}"
+            store["error"] = f"Connection rejected, rc={rc}"
 
     def on_disconnect(client, userdata, rc):
         store["connected"] = False
-        store["error"] = f"Desconectado, rc={rc}"
+        store["error"] = f"Disconnected, rc={rc}"
 
     def on_message(client, userdata, msg):
-        store["data"]       = json.loads(msg.payload.decode())
-        store["msg_count"] += 1
-        store["last_topic"] = msg.topic
+        try:
+            store["data"] = json.loads(msg.payload.decode())
+            store["msg_count"] += 1
+            store["last_topic"] = msg.topic
+        except Exception as error:
+            store["error"] = str(error)
 
     try:
         client = mqtt.Client()
+
         client.username_pw_set(username, password)
         client.tls_set()
-        client.on_connect    = on_connect
+
+        client.on_connect = on_connect
         client.on_disconnect = on_disconnect
-        client.on_message    = on_message
+        client.on_message = on_message
+
         client.connect(host, port, 60)
         client.loop_start()
-    except Exception as e:
-        store["error"] = str(e)
+
+    except Exception as error:
+        store["error"] = str(error)
 
     return store
 
-store = start_mqtt(HOST, PORT, USERNAME, PASSWORD, TOPIC)
-data  = store["data"]
 
-# --- SESSION STATE ---
-if "historial" not in st.session_state:
-    st.session_state.historial = []
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
 if "gateway_registry" not in st.session_state:
     st.session_state.gateway_registry = {}
 
-# --- PROCESAR MENSAJE MQTT ENTRANTE ---
-lilygo_lat    = None
-lilygo_lon    = None
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def render_metric_row(metrics):
+    """
+    Render metrics in columns.
+
+    metrics format:
+    [
+        ("Label", "Value"),
+        ...
+    ]
+    """
+    columns = st.columns(len(metrics))
+
+    for col, (label, value) in zip(columns, metrics):
+        col.metric(label, value)
+
+
+def generate_pdf_report(df: pd.DataFrame) -> bytes:
+    """
+    Generate PDF report from dataframe.
+    """
+
+    pdf = FPDF()
+
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+
+    pdf.cell(0, 10, "LilyGO LoRaWAN Report", ln=True)
+
+    pdf.set_font("Arial", "", 10)
+
+    for index, row in df.iterrows():
+        pdf.ln(5)
+        pdf.cell(0, 8, f"Packet {index + 1}", ln=True)
+
+        for column, value in row.items():
+            pdf.multi_cell(0, 6, f"{column}: {value}")
+
+    return pdf.output(dest="S").encode("latin-1")
+
+
+def initialize_gateway_entry(
+    now,
+    rssi,
+    snr,
+    latitude,
+    longitude,
+    altitude,
+    device_id,
+):
+    return {
+        "last_seen": now,
+        "last_rssi": rssi,
+        "last_snr": snr,
+        "lat": latitude,
+        "lon": longitude,
+        "alt": altitude,
+        "messages": 1,
+        "devices_seen": [device_id],
+        "rssi_history": [rssi] if rssi is not None else [],
+    }
+
+
+def update_gateway_entry(
+    entry,
+    now,
+    rssi,
+    snr,
+    latitude,
+    longitude,
+    altitude,
+    device_id,
+):
+    entry["last_seen"] = now
+    entry["last_rssi"] = rssi
+    entry["last_snr"] = snr
+    entry["messages"] += 1
+
+    if device_id not in entry["devices_seen"]:
+        entry["devices_seen"].append(device_id)
+
+    if rssi is not None:
+        entry["rssi_history"].append(rssi)
+        entry["rssi_history"] = entry["rssi_history"][-50:]
+
+    if latitude is not None:
+        entry["lat"] = latitude
+        entry["lon"] = longitude
+        entry["alt"] = altitude
+
+
+# ============================================================
+# MQTT DATA
+# ============================================================
+
+store = start_mqtt(
+    HOST,
+    PORT,
+    USERNAME,
+    PASSWORD,
+    TOPIC,
+)
+
+data = store["data"]
+
+
+# ============================================================
+# PROCESS INCOMING MQTT MESSAGE
+# ============================================================
+
+lilygo_lat = None
+lilygo_lon = None
 gps_satellites = 0
 
 if data:
-    uplink     = data.get("uplink_message", {})
-    gateways   = uplink.get("rx_metadata", [])
-    settings   = uplink.get("settings", {})
-    frecuencia = settings.get("frequency", "N/A")
-    toa        = uplink.get("consumed_airtime", "N/A")
-    frm_payload = uplink.get("frm_payload", "N/A")
-    device_id  = data.get("end_device_ids", {}).get("device_id", "N/A")
 
-    lilygo_lat, lilygo_lon, gps_satellites = decode_payload(frm_payload)
+    uplink = data.get("uplink_message", {})
+    gateways = uplink.get("rx_metadata", [])
+    settings = uplink.get("settings", {})
+
+    frequency = settings.get("frequency", "N/A")
+    airtime = uplink.get("consumed_airtime", "N/A")
+    payload = uplink.get("frm_payload", "N/A")
+
+    device_id = data.get(
+        "end_device_ids",
+        {},
+    ).get("device_id", "N/A")
+
+    lilygo_lat, lilygo_lon, gps_satellites = decode_payload(payload)
 
     now = datetime.now()
-    for gw in gateways:
-        gw_id    = gw.get("gateway_ids", {}).get("gateway_id", "N/A")
-        rssi     = gw.get("rssi", None)
-        snr      = gw.get("snr", None)
-        location = gw.get("location", {})
-        lat = location.get("latitude", None)
-        lon = location.get("longitude", None)
-        alt = location.get("altitude", None)
 
-        if gw_id not in st.session_state.gateway_registry:
-            st.session_state.gateway_registry[gw_id] = {
-                "last_seen":    now,
-                "last_rssi":    rssi,
-                "last_snr":     snr,
-                "lat": lat, "lon": lon, "alt": alt,
-                "mensajes":     1,
-                "devices_seen": [device_id],
-                "rssi_history": [rssi] if rssi is not None else [],
-            }
+    for gateway in gateways:
+
+        gateway_id = gateway.get(
+            "gateway_ids",
+            {},
+        ).get("gateway_id", "N/A")
+
+        rssi = gateway.get("rssi")
+        snr = gateway.get("snr")
+
+        location = gateway.get("location", {})
+
+        latitude = location.get("latitude")
+        longitude = location.get("longitude")
+        altitude = location.get("altitude")
+
+        registry = st.session_state.gateway_registry
+
+        if gateway_id not in registry:
+
+            registry[gateway_id] = initialize_gateway_entry(
+                now,
+                rssi,
+                snr,
+                latitude,
+                longitude,
+                altitude,
+                device_id,
+            )
+
         else:
-            entry = st.session_state.gateway_registry[gw_id]
-            entry["last_seen"] = now
-            entry["last_rssi"] = rssi
-            entry["last_snr"]  = snr
-            entry["mensajes"] += 1
-            if device_id not in entry["devices_seen"]:
-                entry["devices_seen"].append(device_id)
-            if rssi is not None:
-                entry["rssi_history"].append(rssi)
-                if len(entry["rssi_history"]) > 50:
-                    entry["rssi_history"] = entry["rssi_history"][-50:]
-            if lat is not None:
-                entry["lat"] = lat
-                entry["lon"] = lon
-                entry["alt"] = alt
 
-    paquete = {
-        "fecha_registro": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "device":         device_id,
-        "frame_counter":  uplink.get("f_cnt", "N/A"),
-        "payload":        frm_payload,
-        "gps_latitud":    lilygo_lat if lilygo_lat is not None else "Sin Fix",
-        "gps_longitud":   lilygo_lon if lilygo_lon is not None else "Sin Fix",
-        "satelites":      gps_satellites,
-        "gateways":       len(gateways),
-        "frecuencia":     frecuencia,
-        "toa":            toa,
+            update_gateway_entry(
+                registry[gateway_id],
+                now,
+                rssi,
+                snr,
+                latitude,
+                longitude,
+                altitude,
+                device_id,
+            )
+
+    packet = {
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "device": device_id,
+        "frame_counter": uplink.get("f_cnt", "N/A"),
+        "payload": payload,
+        "gps_latitude": lilygo_lat if lilygo_lat else "No Fix",
+        "gps_longitude": lilygo_lon if lilygo_lon else "No Fix",
+        "satellites": gps_satellites,
+        "gateways": len(gateways),
+        "frequency": frequency,
+        "airtime": airtime,
     }
-    for i, gw in enumerate(gateways, start=1):
-        paquete[f"gateway_{i}"] = gw.get("gateway_ids", {}).get("gateway_id", "N/A")
-        paquete[f"rssi_{i}"]    = gw.get("rssi", "N/A")
-        paquete[f"snr_{i}"]     = gw.get("snr", "N/A")
 
-    if not st.session_state["historial"] or st.session_state["historial"][-1] != paquete:
-        st.session_state["historial"].append(paquete)
+    for index, gateway in enumerate(gateways, start=1):
+
+        packet[f"gateway_{index}"] = gateway.get(
+            "gateway_ids",
+            {},
+        ).get("gateway_id", "N/A")
+
+        packet[f"rssi_{index}"] = gateway.get("rssi", "N/A")
+        packet[f"snr_{index}"] = gateway.get("snr", "N/A")
+
+    if (
+        not st.session_state.history
+        or st.session_state.history[-1] != packet
+    ):
+        st.session_state.history.append(packet)
+
 
 # ============================================================
-# SIDEBAR — navegación + estado MQTT
+# SIDEBAR
 # ============================================================
-pagina = st.sidebar.radio(
-    "Navegación",
-    ["📡 Dashboard", "🗼 Estado de Gateways"],
-    index=0,
+
+page = st.sidebar.radio(
+    "Navigation",
+    [
+        "📡 Dashboard",
+        "🗼 Gateway Status",
+    ],
 )
 
-# --- Panel de debug MQTT en el sidebar ---
-with st.sidebar.expander("🔧 Estado MQTT", expanded=not store["connected"]):
+with st.sidebar.expander(
+    "🔧 MQTT Status",
+    expanded=not store["connected"],
+):
+
     if store["connected"]:
-        st.success("🟢 Conectado a TTN")
+        st.success("🟢 Connected to TTN")
+
     elif store["error"]:
         st.error(f"🔴 Error: {store['error']}")
+
     else:
-        st.warning("🟡 Conectando...")
+        st.warning("🟡 Connecting...")
 
-    st.caption(f"**Host:** {HOST}:{PORT}")
-    st.caption(f"**Topic:** {TOPIC}")
-    st.caption(f"**Mensajes recibidos:** {store['msg_count']}")
+    st.caption(f"Host: {HOST}:{PORT}")
+    st.caption(f"Topic: {TOPIC}")
+    st.caption(f"Messages received: {store['msg_count']}")
+
     if store["last_topic"]:
-        st.caption(f"**Último topic:** {store['last_topic']}")
-    if store["rc"] is not None and store["rc"] != 0:
-        rc_msgs = {
-            1: "Protocolo incorrecto",
-            2: "Client ID rechazado",
-            3: "Servidor no disponible",
-            4: "Usuario/contraseña incorrectos",
-            5: "No autorizado",
-        }
-        st.error(f"RC {store['rc']}: {rc_msgs.get(store['rc'], 'Error desconocido')}")
+        st.caption(f"Last topic: {store['last_topic']}")
 
-    if st.button("🔄 Reiniciar conexión MQTT"):
+    if store["rc"] not in [None, 0]:
+
+        rc_messages = {
+            1: "Incorrect protocol",
+            2: "Client ID rejected",
+            3: "Server unavailable",
+            4: "Wrong username/password",
+            5: "Unauthorized",
+        }
+
+        st.error(
+            f"RC {store['rc']}: "
+            f"{rc_messages.get(store['rc'], 'Unknown error')}"
+        )
+
+    if st.button("🔄 Restart MQTT Connection"):
         st.cache_resource.clear()
         st.rerun()
 
-# ============================================================
-# PÁGINA 1 — DASHBOARD
-# ============================================================
-if pagina == "📡 Dashboard":
-    st.title("📡 Dashboard LilyGO LoRaWAN")
-
-    if data:
-        uplink     = data.get("uplink_message", {})
-        gateways   = uplink.get("rx_metadata", [])
-        settings   = uplink.get("settings", {})
-        frecuencia = settings.get("frequency", "N/A")
-        toa        = uplink.get("consumed_airtime", "N/A")
-        frm_payload = uplink.get("frm_payload", "N/A")
-
-        st.success("Datos recibidos desde TTN")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Dispositivo",       data["end_device_ids"]["device_id"])
-        c2.metric("Frame counter",     uplink.get("f_cnt"))
-        c3.metric("Payload",           frm_payload)
-        c4.metric("Gateways recibidos", len(gateways))
-
-        st.subheader("📡 Gateways que han recibido la LilyGO")
-        rows = []
-        for i, gw in enumerate(gateways, start=1):
-            gw_id       = gw.get("gateway_ids", {}).get("gateway_id", "N/A")
-            rssi        = gw.get("rssi", "N/A")
-            channel_rssi = gw.get("channel_rssi", "N/A")
-            snr         = gw.get("snr", "N/A")
-            timestamp   = gw.get("time", gw.get("timestamp", "N/A"))
-            location    = gw.get("location", {})
-            lat = location.get("latitude", None)
-            lon = location.get("longitude", None)
-            alt = location.get("altitude", None)
-
-            rows.append({
-                "Nº": i, "Gateway ID": gw_id, "RSSI": rssi,
-                "Channel RSSI": channel_rssi, "SNR": snr, "ToA": toa,
-                "Frecuencia": frecuencia, "Timestamp": timestamp,
-                "Latitud": lat, "Longitud": lon, "Altitud": alt,
-            })
-
-            with st.container(border=True):
-                st.markdown(f"### Gateway {i}: `{gw_id}`")
-                a, b, c, d = st.columns(4)
-                a.metric("RSSI",      f"{rssi} dBm")
-                b.metric("SNR",       snr)
-                c.metric("ToA",       toa)
-                d.metric("Frecuencia", frecuencia)
-                e, f, g = st.columns(3)
-                e.write(f"**Timestamp:** {timestamp}")
-                f.write(f"**Latitud:** {lat if lat is not None else 'N/A'}")
-                g.write(f"**Longitud:** {lon if lon is not None else 'N/A'}")
-
-        st.subheader("📋 Tabla resumen de gateways")
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True)
-
-        map_df = df.dropna(subset=["Latitud", "Longitud"])
-        if not map_df.empty:
-            st.subheader("🗺️ Localización de gateways")
-            st.map(map_df.rename(columns={"Latitud": "lat", "Longitud": "lon"})[["lat", "lon"]])
-
-        st.subheader("📍 Localización de la LilyGO (GPS Dinámico)")
-        if lilygo_lat is not None and lilygo_lon is not None:
-            st.info(f"🛰️ Satélites GPS: **{gps_satellites}**")
-            st.write(f"**Latitud:** {lilygo_lat}  |  **Longitud:** {lilygo_lon}")
-            st.map(pd.DataFrame({"lat": [lilygo_lat], "lon": [lilygo_lon]}))
-        else:
-            st.warning("⚠️ GPS sin FIX todavía. Mostrando posición de respaldo...")
-            st.map(pd.DataFrame({"lat": [39.4825], "lon": [-0.3463]}))
-
-        with st.expander("JSON completo recibido"):
-            st.json(data)
-
-    else:
-        st.info("Esperando datos MQTT de TTN...")
-        st.caption("Si el panel MQTT del sidebar muestra un error, revisa las credenciales en `.streamlit/secrets.toml`.")
-
-    historial_df = pd.DataFrame(st.session_state["historial"])
-    if not historial_df.empty:
-        csv = historial_df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Descargar CSV", csv, "historial_lilygo.csv", "text/csv")
-
-        def crear_pdf(df):
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", "B", 16)
-            pdf.cell(0, 10, "Informe LilyGO LoRaWAN", ln=True)
-            pdf.set_font("Arial", "", 10)
-            for idx, row in df.iterrows():
-                pdf.ln(5)
-                pdf.cell(0, 8, f"Paquete {idx+1}", ln=True)
-                for col, value in row.items():
-                    pdf.multi_cell(0, 6, f"{col}: {value}")
-            return pdf.output(dest="S").encode("latin-1")
-
-        pdf_bytes = crear_pdf(historial_df)
-        st.download_button("📄 Descargar PDF", pdf_bytes, "informe_lilygo.pdf", "application/pdf")
 
 # ============================================================
-# PÁGINA 2 — ESTADO DE GATEWAYS
+# GATEWAY STATUS PAGE
 # ============================================================
-elif pagina == "🗼 Estado de Gateways":
-    st.title("🗼 Estado de Gateways LoRaWAN")
-    st.caption("Acumulado desde que se inició la sesión. Se actualiza automáticamente.")
+
+def render_gateway_status():
+
+    st.title("🗼 LoRaWAN Gateway Status")
 
     registry = st.session_state.gateway_registry
     now = datetime.now()
 
     if not registry:
-        st.info("Todavía no se ha recibido ningún mensaje. Esperando datos MQTT...")
-    else:
-        total_gw   = len(registry)
-        activos    = sum(1 for v in registry.values()
-                        if (now - v["last_seen"]).total_seconds() < GATEWAY_TIMEOUT_S)
-        inactivos  = total_gw - activos
-        total_msgs = sum(v["mensajes"] for v in registry.values())
+        st.info("No gateway messages received yet.")
+        return
 
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Gateways vistos",             total_gw)
-        k2.metric("🟢 Activos (< 5 min)",        activos)
-        k3.metric("🔴 Inactivos (≥ 5 min)",      inactivos)
-        k4.metric("Mensajes totales procesados", total_msgs)
+    total_gateways = len(registry)
 
-        st.divider()
-        st.subheader("Detalle por gateway")
+    active_gateways = sum(
+        1
+        for value in registry.values()
+        if (now - value["last_seen"]).total_seconds()
+        < GATEWAY_TIMEOUT_S
+    )
 
-        def sort_key(item):
-            _, v = item
-            activo = (now - v["last_seen"]).total_seconds() < GATEWAY_TIMEOUT_S
-            return (not activo, -v["mensajes"])
+    inactive_gateways = total_gateways - active_gateways
 
-        for gw_id, v in sorted(registry.items(), key=sort_key):
-            seg    = (now - v["last_seen"]).total_seconds()
-            activo = seg < GATEWAY_TIMEOUT_S
+    total_messages = sum(
+        value["messages"]
+        for value in registry.values()
+    )
 
-            if activo:
-                estado_label = "🟢 Activo"
-                estado_color = "green"
-                tiempo_label = f"Hace {int(seg)}s"
-            else:
-                mins = int(seg // 60)
-                estado_label = "🔴 Inactivo"
-                estado_color = "red"
-                tiempo_label = f"Hace {mins} min" if mins < 60 else f"Hace {mins//60}h {mins%60}min"
+    render_metric_row([
+        ("Gateways", total_gateways),
+        ("🟢 Active", active_gateways),
+        ("🔴 Inactive", inactive_gateways),
+        ("Messages", total_messages),
+    ])
 
-            with st.container(border=True):
-                col_titulo, col_estado = st.columns([4, 1])
-                col_titulo.markdown(f"### `{gw_id}`")
-                col_estado.markdown(
-                    f"<div style='text-align:right;color:{estado_color};font-size:1.1rem;padding-top:8px'>"
-                    f"<b>{estado_label}</b></div>",
-                    unsafe_allow_html=True,
-                )
+    st.divider()
 
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Último mensaje", tiempo_label)
-                m1.caption(v["last_seen"].strftime("%H:%M:%S"))
-                m2.metric("RSSI", f"{v['last_rssi']} dBm" if v["last_rssi"] is not None else "N/A")
-                m3.metric("SNR",  str(v["last_snr"]) if v["last_snr"] is not None else "N/A")
-                m4.metric("Mensajes",    v["mensajes"])
-                m5.metric("Dispositivos", len(v["devices_seen"]))
+    for gateway_id, value in registry.items():
 
-                with st.expander("Ver dispositivos y RSSI histórico"):
-                    st.write("**Dispositivos detectados:**")
-                    st.write(", ".join(v["devices_seen"]) or "Ninguno")
-                    if len(v["rssi_history"]) > 1:
-                        rssi_df = pd.DataFrame({
-                            "Muestra":   range(1, len(v["rssi_history"]) + 1),
-                            "RSSI (dBm)": v["rssi_history"],
-                        }).set_index("Muestra")
-                        st.line_chart(rssi_df, height=150)
-                    else:
-                        st.caption("Historial RSSI insuficiente para graficar.")
-                    if v["lat"] is not None:
-                        st.write(f"**Coordenadas:** {v['lat']:.5f}, {v['lon']:.5f}"
-                                 + (f" | Alt: {v['alt']} m" if v["alt"] else ""))
+        seconds = (
+            now - value["last_seen"]
+        ).total_seconds()
 
-        st.divider()
-        st.subheader("📋 Tabla resumen")
-        tabla_rows = []
-        for gw_id, v in registry.items():
-            seg = (now - v["last_seen"]).total_seconds()
-            tabla_rows.append({
-                "Gateway ID":     gw_id,
-                "Estado":         "Activo" if seg < GATEWAY_TIMEOUT_S else "Inactivo",
-                "Último mensaje": v["last_seen"].strftime("%Y-%m-%d %H:%M:%S"),
-                "Mensajes":       v["mensajes"],
-                "Dispositivos":   len(v["devices_seen"]),
-                "RSSI":           v["last_rssi"],
-                "SNR":            v["last_snr"],
-                "Lat":            v["lat"],
-                "Lon":            v["lon"],
-            })
-        tabla_df = pd.DataFrame(tabla_rows).sort_values("Mensajes", ascending=False)
-        st.dataframe(tabla_df, use_container_width=True)
+        active = seconds < GATEWAY_TIMEOUT_S
 
-        map_rows = [r for r in tabla_rows if r["Lat"] is not None]
-        if map_rows:
-            st.subheader("🗺️ Mapa de gateways")
-            st.map(pd.DataFrame(map_rows).rename(columns={"Lat": "lat", "Lon": "lon"})[["lat", "lon"]])
+        if active:
+            status = "🟢 Active"
+            elapsed = f"{int(seconds)}s ago"
         else:
-            st.info("Ningún gateway ha enviado coordenadas todavía.")
+            minutes = int(seconds // 60)
+            status = "🔴 Inactive"
+            elapsed = f"{minutes} min ago"
 
-        csv_gw = tabla_df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Descargar CSV gateways", csv_gw, "estado_gateways.csv", "text/csv")
+        with st.container(border=True):
 
-# --- Auto-refresco ---
-time.sleep(3)
-st.rerun()
+            st.markdown(f"### `{gateway_id}`")
+            st.caption(status)
+
+            render_metric_row([
+                ("Last Message", elapsed),
+                ("RSSI", value["last_rssi"]),
+                ("SNR", value["last_snr"]),
+                ("Messages", value["messages"]),
+                ("Devices", len(value["devices_seen"])),
+            ])
+
+            with st.expander("Details"):
+
+                st.write("Devices:")
+                st.write(", ".join(value["devices_seen"]))
+
+                if len(value["rssi_history"]) > 1:
+
+                    rssi_df = pd.DataFrame({
+                        "RSSI": value["rssi_history"]
+                    })
+
+                    st.line_chart(rssi_df)
+
+                if value["lat"] is not None:
+
+                    st.write(
+                        f"Coordinates: "
+                        f"{value['lat']:.5f}, "
+                        f"{value['lon']:.5f}"
+                    )
+
+    rows = []
+
+    for gateway_id, value in registry.items():
+
+        rows.append({
+            "Gateway ID": gateway_id,
+            "Messages": value["messages"],
+            "Devices": len(value["devices_seen"]),
+            "RSSI": value["last_rssi"],
+            "SNR": value["last_snr"],
+            "Latitude": value["lat"],
+            "Longitude": value["lon"],
+        })
+
+    dataframe = pd.DataFrame(rows)
+
+    st.subheader("📋 Gateway Table")
+    st.dataframe(dataframe, use_container_width=True)
+
+    map_rows = dataframe.dropna(
+        subset=["Latitude", "Longitude"]
+    )
+
+    if not map_rows.empty:
+
+        st.subheader("🗺️ Gateway Map")
+
+        st.map(
+            map_rows.rename(
+                columns={
+                    "Latitude": "lat",
+                    "Longitude": "lon",
+                }
+            )[["lat", "lon"]]
+        )
+
+
+# ============================================================
+# ROUTING
+# ============================================================
+
+if page == "🗼 Gateway Status":
+    render_gateway_status()
+
+
+# ============================================================
+# AUTO REFRESH
+# ============================================================
+
+from streamlit_autorefresh import st_autorefresh
+
+st_autorefresh(interval=3000, key="mqtt_refresh")
