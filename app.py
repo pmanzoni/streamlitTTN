@@ -364,7 +364,7 @@ page = st.sidebar.radio(
     "Navigation",
     [
         "🗼 Gateway Status",
-        "📡 Dashboard",
+        "☑️ Future work",
     ],
 )
 
